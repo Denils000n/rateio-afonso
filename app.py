@@ -1,10 +1,24 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
+import unicodedata
 
 st.set_page_config(page_title="Rateio TI", layout="wide")
 
 st.title("📊 Rateio de Licenças - Afonso França")
+
+
+# -------------------------
+# FUNÇÕES AUXILIARES
+# -------------------------
+
+def normalizar_coluna(col):
+    col = str(col).strip().lower()
+    col = ''.join(
+        c for c in unicodedata.normalize('NFD', col)
+        if unicodedata.category(c) != 'Mn'
+    )
+    return col
 
 
 def converter_valor_brl(texto):
@@ -44,6 +58,10 @@ def identificar_empresa_por_office(office):
     return mapa.get(prefixo, "Não identificada")
 
 
+# -------------------------
+# UPLOAD
+# -------------------------
+
 arquivo = st.file_uploader(
     "📁 Suba sua planilha CSV ou Excel",
     type=["csv", "xlsx"]
@@ -56,57 +74,78 @@ if arquivo:
         df = pd.read_excel(arquivo)
 
     st.success("Arquivo carregado com sucesso!")
-    st.write("Colunas encontradas:", df.columns.tolist())
 
-    colunas_obrigatorias = ["Office", "Valor licenças (R$)"]
+    # Normaliza colunas
+    df.columns = [normalizar_coluna(c) for c in df.columns]
+
+    st.write("Colunas detectadas:", df.columns.tolist())
+
+    # -------------------------
+    # VALIDAÇÃO
+    # -------------------------
+
+    colunas_obrigatorias = ["office", "valor licencas (r$)"]
 
     for coluna in colunas_obrigatorias:
         if coluna not in df.columns:
-            st.error(f"A planilha precisa ter a coluna '{coluna}'")
+            st.error(f"Coluna obrigatória não encontrada: '{coluna}'")
             st.stop()
 
-    if "Empresa" not in df.columns:
-        df["Empresa"] = df["Office"].apply(identificar_empresa_por_office)
+    # -------------------------
+    # AJUSTES DE COLUNA
+    # -------------------------
+
+    if "empresa" not in df.columns:
+        df["empresa"] = df["office"].apply(identificar_empresa_por_office)
     else:
-        df["Empresa"] = df["Empresa"].fillna("")
-        df.loc[df["Empresa"].astype(str).str.strip() == "", "Empresa"] = (
-            df["Office"].apply(identificar_empresa_por_office)
+        df["empresa"] = df["empresa"].fillna("")
+        df.loc[df["empresa"].astype(str).str.strip() == "", "empresa"] = (
+            df["office"].apply(identificar_empresa_por_office)
         )
 
-    if "Detalhamento do cálculo" not in df.columns:
-        df["Detalhamento do cálculo"] = ""
+    if "detalhamento do calculo" not in df.columns:
+        df["detalhamento do calculo"] = ""
 
-    df["Valor licenças (R$)"] = df["Valor licenças (R$)"].apply(converter_valor_brl)
+    # Converte valores
+    df["valor licencas (r$)"] = df["valor licencas (r$)"].apply(converter_valor_brl)
+
+    # -------------------------
+    # INPUT VALOR FATURA
+    # -------------------------
 
     valor_total_input = st.text_input(
         "💰 Valor total da fatura (R$)",
-        placeholder="Ex.: 168.610,17"
+        placeholder="Ex: 168.610,17"
     )
 
     valor_total = converter_valor_brl(valor_total_input)
 
-    empresas_disponiveis = sorted(df["Empresa"].dropna().astype(str).unique().tolist())
-    opcoes_empresa = ["Todas"] + empresas_disponiveis
+    # -------------------------
+    # FILTRO EMPRESA
+    # -------------------------
 
-    empresa_selecionada = st.selectbox(
-        "🏢 Selecione a empresa",
-        options=opcoes_empresa
-    )
+    empresas = sorted(df["empresa"].dropna().astype(str).unique().tolist())
+    empresa_selecionada = st.selectbox("🏢 Empresa", ["Todas"] + empresas)
 
     if empresa_selecionada == "Todas":
         df_filtrado = df.copy()
     else:
-        df_filtrado = df[df["Empresa"] == empresa_selecionada].copy()
+        df_filtrado = df[df["empresa"] == empresa_selecionada]
 
-    st.subheader("📋 Prévia dos dados filtrados")
+    st.subheader("📋 Prévia")
     st.dataframe(df_filtrado.head(20), use_container_width=True)
 
+    # -------------------------
+    # RATEIO
+    # -------------------------
+
     if valor_total > 0:
-        resumo = df_filtrado.groupby(["Empresa", "Office"]).agg(
-            qtd_usuarios=("Office", "count"),
-            valor_licencas=("Valor licenças (R$)", "sum"),
+
+        resumo = df_filtrado.groupby(["empresa", "office"]).agg(
+            qtd_usuarios=("office", "count"),
+            valor_licencas=("valor licencas (r$)", "sum"),
             detalhamento=(
-                "Detalhamento do cálculo",
+                "detalhamento do calculo",
                 lambda x: " | ".join(
                     x.dropna().astype(str).str.strip().replace("", pd.NA).dropna().unique()
                 )
@@ -116,79 +155,84 @@ if arquivo:
         total_licencas = resumo["valor_licencas"].sum()
 
         if total_licencas == 0:
-            st.error("A soma da coluna 'Valor licenças (R$)' está zerada.")
+            st.error("Total de licenças está zerado.")
             st.stop()
 
-        diferenca_fatura = valor_total - total_licencas
+        diferenca = valor_total - total_licencas
 
         resumo["percentual"] = resumo["valor_licencas"] / total_licencas
-        resumo["ajuste_rateado"] = resumo["percentual"] * diferenca_fatura
-        resumo["valor_final_rateado"] = resumo["valor_licencas"] + resumo["ajuste_rateado"]
+        resumo["ajuste"] = resumo["percentual"] * diferenca
+        resumo["valor_final"] = resumo["valor_licencas"] + resumo["ajuste"]
 
+        # Arredondamento
         resumo["valor_licencas"] = resumo["valor_licencas"].round(2)
-        resumo["ajuste_rateado"] = resumo["ajuste_rateado"].round(2)
-        resumo["valor_final_rateado"] = resumo["valor_final_rateado"].round(2)
+        resumo["ajuste"] = resumo["ajuste"].round(2)
+        resumo["valor_final"] = resumo["valor_final"].round(2)
         resumo["percentual"] = (resumo["percentual"] * 100).round(2)
 
-        st.subheader("📊 Resultado do Rateio")
+        # -------------------------
+        # DASHBOARD
+        # -------------------------
 
-        total_usuarios = int(resumo["qtd_usuarios"].sum())
-        total_centros = int(resumo["Office"].nunique())
+        st.subheader("📊 Resultado")
 
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Empresa selecionada", empresa_selecionada)
-        col2.metric("Centros de custo", total_centros)
-        col3.metric("Usuários considerados", total_usuarios)
-        col4.metric("Diferença rateada", formatar_brl(diferenca_fatura))
 
-        st.info(f"Total das licenças na planilha: {formatar_brl(total_licencas)}")
-        st.info(f"Valor total da fatura: {formatar_brl(valor_total)}")
+        col1.metric("Empresa", empresa_selecionada)
+        col2.metric("Centros", resumo["office"].nunique())
+        col3.metric("Usuários", int(resumo["qtd_usuarios"].sum()))
+        col4.metric("Diferença", formatar_brl(diferenca))
+
+        st.info(f"Total licenças: {formatar_brl(total_licencas)}")
+        st.info(f"Fatura: {formatar_brl(valor_total)}")
 
         for _, row in resumo.iterrows():
             st.success(
-                f"Empresa {row['Empresa']} | Centro de Custo {row['Office']} possui "
-                f"{int(row['qtd_usuarios'])} usuário(s), "
-                f"licenças no valor de {formatar_brl(row['valor_licencas'])}, "
-                f"ajuste de {formatar_brl(row['ajuste_rateado'])}, "
-                f"totalizando {formatar_brl(row['valor_final_rateado'])}."
+                f"{row['empresa']} | CC {row['office']} → "
+                f"{formatar_brl(row['valor_final'])}"
             )
 
+        # -------------------------
+        # EXPORTAÇÃO
+        # -------------------------
+
         output = resumo[[
-            "Empresa",
-            "Office",
+            "empresa",
+            "office",
             "qtd_usuarios",
             "valor_licencas",
             "percentual",
-            "ajuste_rateado",
-            "valor_final_rateado",
+            "ajuste",
+            "valor_final",
             "detalhamento"
-        ]].copy()
+        ]]
 
         output.columns = [
             "Empresa",
             "Centro de Custo",
             "Qtd Usuários",
-            "Valor das Licenças (R$)",
-            "Percentual (%)",
-            "Ajuste Rateado (R$)",
-            "Valor Final Rateado (R$)",
-            "Detalhamento do Cálculo"
+            "Valor Licenças (R$)",
+            "% Participação",
+            "Ajuste (R$)",
+            "Valor Final (R$)",
+            "Detalhamento"
         ]
 
-        st.subheader("📑 Tabela final")
+        st.subheader("📑 Tabela Final")
         st.dataframe(output, use_container_width=True)
 
         buffer = BytesIO()
 
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             output.to_excel(writer, index=False, sheet_name="Rateio")
-            df_filtrado.to_excel(writer, index=False, sheet_name="Base_Filtrada")
+            df_filtrado.to_excel(writer, index=False, sheet_name="Base")
 
         st.download_button(
-            label="📥 Baixar Excel",
+            "📥 Baixar Excel",
             data=buffer.getvalue(),
-            file_name="rateio_licencas.xlsx",
+            file_name="rateio_final.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
     else:
-        st.warning("Informe o valor total da fatura para calcular o rateio.")
+        st.warning("Informe o valor da fatura para calcular.")
