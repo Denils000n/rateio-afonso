@@ -8,10 +8,6 @@ st.set_page_config(page_title="Rateio TI", layout="wide")
 st.title("📊 Rateio de Licenças - Afonso França")
 
 
-# -------------------------
-# FUNÇÕES AUXILIARES
-# -------------------------
-
 def normalizar_coluna(col):
     col = str(col).strip().lower()
     col = ''.join(
@@ -65,10 +61,6 @@ def localizar_coluna(df, opcoes):
     return None
 
 
-# -------------------------
-# UPLOAD
-# -------------------------
-
 arquivo = st.file_uploader(
     "📁 Suba sua planilha CSV ou Excel",
     type=["csv", "xlsx"]
@@ -86,20 +78,12 @@ if arquivo:
 
     st.write("Colunas detectadas:", df.columns.tolist())
 
-    # -------------------------
-    # VALIDAÇÃO
-    # -------------------------
-
     colunas_obrigatorias = ["office", "valor licencas (r$)"]
 
     for coluna in colunas_obrigatorias:
         if coluna not in df.columns:
             st.error(f"Coluna obrigatória não encontrada: '{coluna}'")
             st.stop()
-
-    # -------------------------
-    # AJUSTES
-    # -------------------------
 
     if "empresa" not in df.columns:
         df["empresa"] = df["office"].apply(identificar_empresa_por_office)
@@ -130,22 +114,14 @@ if arquivo:
         "area"
     ])
 
-    # -------------------------
-    # VALOR DA FATURA
-    # -------------------------
-
     valor_total_input = st.text_input(
-        "💰 Valor total da fatura (R$)",
+        "💰 Valor total da fatura geral (R$)",
         placeholder="Ex: 168.610,17"
     )
 
     valor_total = converter_valor_brl(valor_total_input)
 
-    # -------------------------
-    # PESQUISA
-    # -------------------------
-
-    st.subheader("🔎 Pesquisa / Consulta")
+    st.subheader("🔎 Pesquisa")
 
     empresas = sorted(df["empresa"].dropna().astype(str).unique().tolist())
     empresa_selecionada = st.selectbox("🏢 Empresa", ["Todas"] + empresas)
@@ -170,10 +146,11 @@ if arquivo:
             placeholder="Ex: TI, RH, Financeiro..."
         )
 
-    # -------------------------
-    # BASE DE CONSULTA FILTRADA
-    # NÃO INTERFERE NO RATEIO
-    # -------------------------
+    tem_pesquisa = (
+        pesquisa_centro.strip()
+        or pesquisa_nome.strip()
+        or pesquisa_departamento.strip()
+    )
 
     df_consulta = df.copy()
 
@@ -207,24 +184,24 @@ if arquivo:
         else:
             st.warning("Coluna de departamento não encontrada.")
 
-    st.subheader("📋 Consulta da Base")
-    st.dataframe(df_consulta.head(100), use_container_width=True)
-    st.info(f"Registros encontrados na consulta: {len(df_consulta)}")
-
-    # -------------------------
-    # RATEIO GERAL
-    # SEMPRE COM BASE COMPLETA
-    # -------------------------
-
-    if valor_total > 0:
-
+    if tem_pesquisa:
+        df_rateio = df_consulta.copy()
+        titulo_rateio = "Resultado da Pesquisa"
+    else:
         df_rateio = df.copy()
+        titulo_rateio = "Rateio Geral"
 
         if empresa_selecionada != "Todas":
             df_rateio = df_rateio[df_rateio["empresa"] == empresa_selecionada]
 
+    st.subheader("📋 Base Encontrada")
+    st.dataframe(df_consulta.head(100), use_container_width=True)
+    st.info(f"Registros encontrados: {len(df_consulta)}")
+
+    if valor_total > 0:
+
         if df_rateio.empty:
-            st.error("Não há dados para calcular o rateio.")
+            st.error("Nenhum registro encontrado para calcular.")
             st.stop()
 
         resumo = df_rateio.groupby(["empresa", "office"]).agg(
@@ -249,20 +226,23 @@ if arquivo:
             st.error("Total de licenças está zerado.")
             st.stop()
 
-        diferenca = valor_total - total_licencas
-
-        resumo["percentual"] = resumo["valor_licencas"] / total_licencas
-        resumo["ajuste"] = resumo["percentual"] * diferenca
-        resumo["valor_final"] = resumo["valor_licencas"] + resumo["ajuste"]
+        if tem_pesquisa:
+            valor_base_rateio = total_licencas
+            diferenca = 0
+            resumo["percentual"] = 1
+            resumo["ajuste"] = 0
+            resumo["valor_final"] = resumo["valor_licencas"]
+        else:
+            valor_base_rateio = valor_total
+            diferenca = valor_total - total_licencas
+            resumo["percentual"] = resumo["valor_licencas"] / total_licencas
+            resumo["ajuste"] = resumo["percentual"] * diferenca
+            resumo["valor_final"] = resumo["valor_licencas"] + resumo["ajuste"]
 
         resumo["valor_licencas"] = resumo["valor_licencas"].round(2)
         resumo["ajuste"] = resumo["ajuste"].round(2)
         resumo["valor_final"] = resumo["valor_final"].round(2)
         resumo["percentual"] = (resumo["percentual"] * 100).round(2)
-
-        # -------------------------
-        # SAÍDA DO RATEIO
-        # -------------------------
 
         output = resumo[[
             "empresa",
@@ -286,78 +266,38 @@ if arquivo:
             "Detalhamento"
         ]
 
-        # -------------------------
-        # FILTRO VISUAL DO RATEIO
-        # NÃO RECALCULA VALORES
-        # -------------------------
-
-        output_visual = output.copy()
-
-        centros_consulta = (
-            df_consulta["office"]
-            .dropna()
-            .astype(str)
-            .unique()
-            .tolist()
-        )
-
-        if pesquisa_centro.strip() or pesquisa_nome.strip() or pesquisa_departamento.strip():
-            output_visual = output_visual[
-                output_visual["Centro de Custo"]
-                .astype(str)
-                .isin(centros_consulta)
-            ]
-
-        # -------------------------
-        # DASHBOARD
-        # -------------------------
-
-        st.subheader("📊 Resultado Geral do Rateio")
+        st.subheader(f"📊 {titulo_rateio}")
 
         col1, col2, col3, col4 = st.columns(4)
 
         col1.metric("Empresa", empresa_selecionada)
-        col2.metric("Centros no Rateio Geral", resumo["office"].nunique())
-        col3.metric("Usuários no Rateio Geral", int(resumo["qtd_usuarios"].sum()))
-        col4.metric("Diferença", formatar_brl(diferenca))
+        col2.metric("Centros", output["Centro de Custo"].nunique())
+        col3.metric("Usuários", int(output["Qtd Usuários"].sum()))
+        col4.metric("Valor Encontrado", formatar_brl(output["Valor Final (R$)"].sum()))
 
-        st.info(f"Total licenças base geral: {formatar_brl(total_licencas)}")
-        st.info(f"Fatura informada: {formatar_brl(valor_total)}")
+        st.info(f"Total de licenças encontrado: {formatar_brl(total_licencas)}")
 
-        st.subheader("📑 Tabela de Rateio")
+        if not tem_pesquisa:
+            st.info(f"Fatura informada: {formatar_brl(valor_total)}")
+            st.info(f"Diferença rateada: {formatar_brl(diferenca)}")
 
-        if output_visual.empty:
-            st.warning("Nenhum centro de custo encontrado para a pesquisa.")
-        else:
-            st.dataframe(output_visual, use_container_width=True)
+        st.subheader("📑 Resultado")
+        st.dataframe(output, use_container_width=True)
 
-        # -------------------------
-        # DETALHE DOS USUÁRIOS PESQUISADOS
-        # -------------------------
-
-        st.subheader("👥 Detalhe da Consulta")
-
-        if df_consulta.empty:
-            st.warning("Nenhum usuário encontrado na consulta.")
-        else:
-            st.dataframe(df_consulta, use_container_width=True)
-
-        # -------------------------
-        # EXPORTAÇÃO
-        # -------------------------
+        st.subheader("👥 Usuários / Itens Encontrados")
+        st.dataframe(df_rateio, use_container_width=True)
 
         buffer = BytesIO()
 
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            output.to_excel(writer, index=False, sheet_name="Rateio Geral")
-            output_visual.to_excel(writer, index=False, sheet_name="Rateio Consulta")
-            df_consulta.to_excel(writer, index=False, sheet_name="Usuarios Consulta")
+            output.to_excel(writer, index=False, sheet_name="Resultado")
+            df_rateio.to_excel(writer, index=False, sheet_name="Base Encontrada")
             df.to_excel(writer, index=False, sheet_name="Base Completa")
 
         st.download_button(
             "📥 Baixar Excel",
             data=buffer.getvalue(),
-            file_name="rateio_final.xlsx",
+            file_name="resultado_rateio.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
