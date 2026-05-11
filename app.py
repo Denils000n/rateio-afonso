@@ -58,6 +58,13 @@ def identificar_empresa_por_office(office):
     return mapa.get(prefixo, "Não identificada")
 
 
+def localizar_coluna(df, opcoes):
+    for opcao in opcoes:
+        if opcao in df.columns:
+            return opcao
+    return None
+
+
 # -------------------------
 # UPLOAD
 # -------------------------
@@ -109,6 +116,17 @@ if arquivo:
     # Converte valores
     df["valor licencas (r$)"] = df["valor licencas (r$)"].apply(converter_valor_brl)
 
+    # Localiza colunas opcionais
+    coluna_nome = localizar_coluna(df, ["nome", "usuario", "user", "nome usuario", "nome do usuario"])
+
+    coluna_departamento = localizar_coluna(df, [
+        "departament",
+        "departamento",
+        "department",
+        "setor",
+        "area"
+    ])
+
     # -------------------------
     # INPUT VALOR FATURA
     # -------------------------
@@ -121,19 +139,74 @@ if arquivo:
     valor_total = converter_valor_brl(valor_total_input)
 
     # -------------------------
-    # FILTRO EMPRESA
+    # FILTROS DE PESQUISA
     # -------------------------
+
+    st.subheader("🔎 Pesquisa")
 
     empresas = sorted(df["empresa"].dropna().astype(str).unique().tolist())
     empresa_selecionada = st.selectbox("🏢 Empresa", ["Todas"] + empresas)
 
-    if empresa_selecionada == "Todas":
-        df_filtrado = df.copy()
-    else:
-        df_filtrado = df[df["empresa"] == empresa_selecionada]
+    col_f1, col_f2, col_f3 = st.columns(3)
+
+    with col_f1:
+        pesquisa_centro = st.text_input(
+            "Pesquisar Centro de Custo",
+            placeholder="Ex: 01.02.0607 ou PATRIA"
+        )
+
+    with col_f2:
+        pesquisa_nome = st.text_input(
+            "Pesquisar Nome do Usuário",
+            placeholder="Ex: João, Maria..."
+        )
+
+    with col_f3:
+        pesquisa_departamento = st.text_input(
+            "Pesquisar Departamento",
+            placeholder="Ex: TI, RH, Financeiro..."
+        )
+
+    df_filtrado = df.copy()
+
+    # Filtro por empresa
+    if empresa_selecionada != "Todas":
+        df_filtrado = df_filtrado[df_filtrado["empresa"] == empresa_selecionada]
+
+    # Filtro por centro de custo
+    if pesquisa_centro.strip():
+        df_filtrado = df_filtrado[
+            df_filtrado["office"]
+            .astype(str)
+            .str.contains(pesquisa_centro.strip(), case=False, na=False)
+        ]
+
+    # Filtro por nome do usuário
+    if pesquisa_nome.strip():
+        if coluna_nome:
+            df_filtrado = df_filtrado[
+                df_filtrado[coluna_nome]
+                .astype(str)
+                .str.contains(pesquisa_nome.strip(), case=False, na=False)
+            ]
+        else:
+            st.warning("Coluna de nome do usuário não encontrada.")
+
+    # Filtro por departamento
+    if pesquisa_departamento.strip():
+        if coluna_departamento:
+            df_filtrado = df_filtrado[
+                df_filtrado[coluna_departamento]
+                .astype(str)
+                .str.contains(pesquisa_departamento.strip(), case=False, na=False)
+            ]
+        else:
+            st.warning("Coluna de departamento não encontrada.")
 
     st.subheader("📋 Prévia")
-    st.dataframe(df_filtrado.head(20), use_container_width=True)
+    st.dataframe(df_filtrado.head(50), use_container_width=True)
+
+    st.info(f"Registros encontrados: {len(df_filtrado)}")
 
     # -------------------------
     # RATEIO
@@ -141,13 +214,22 @@ if arquivo:
 
     if valor_total > 0:
 
+        if df_filtrado.empty:
+            st.error("Nenhum registro encontrado com os filtros informados.")
+            st.stop()
+
         resumo = df_filtrado.groupby(["empresa", "office"]).agg(
             qtd_usuarios=("office", "count"),
             valor_licencas=("valor licencas (r$)", "sum"),
             detalhamento=(
                 "detalhamento do calculo",
                 lambda x: " | ".join(
-                    x.dropna().astype(str).str.strip().replace("", pd.NA).dropna().unique()
+                    x.dropna()
+                    .astype(str)
+                    .str.strip()
+                    .replace("", pd.NA)
+                    .dropna()
+                    .unique()
                 )
             )
         ).reset_index()
@@ -225,7 +307,8 @@ if arquivo:
 
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             output.to_excel(writer, index=False, sheet_name="Rateio")
-            df_filtrado.to_excel(writer, index=False, sheet_name="Base")
+            df_filtrado.to_excel(writer, index=False, sheet_name="Base Filtrada")
+            df.to_excel(writer, index=False, sheet_name="Base Completa")
 
         st.download_button(
             "📥 Baixar Excel",
@@ -236,3 +319,5 @@ if arquivo:
 
     else:
         st.warning("Informe o valor da fatura para calcular.")
+else:
+    st.info("Suba uma planilha para iniciar.")
